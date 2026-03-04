@@ -1,0 +1,4 @@
+uvame-relay
+*.db
+*.log
+dist/
