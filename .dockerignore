@@ -1,0 +1,4 @@
+*.db
+*.log
+.git
+.github
