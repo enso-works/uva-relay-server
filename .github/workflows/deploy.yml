@@ -38,16 +38,24 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    environment: production
     steps:
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
         with:
-          host: 89.167.2.212
-          username: deploy
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 100.79.155.92 >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploy to server
+        run: |
+          ssh -o StrictHostKeyChecking=no deploy@100.79.155.92 << 'EOF'
             sudo /usr/bin/docker pull ghcr.io/enso-works/uva-relay-server:latest
-            cd ~/uvame
             sudo /usr/bin/docker stop uvame-relay || true
             sudo /usr/bin/docker rm uvame-relay || true
             sudo /usr/bin/docker run -d \
@@ -60,3 +68,4 @@ jobs:
               -v uvame_relay_data:/data \
               ghcr.io/enso-works/uva-relay-server:latest
             sudo /usr/bin/docker image prune -f
+          EOF
