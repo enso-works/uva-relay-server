@@ -69,7 +69,7 @@ func (m *Manager) RegisterServer(conn *Conn, username, installID string) Registr
 	if existing != nil {
 		// Use Close in a goroutine to avoid blocking the registering connection.
 		// Close sends a close frame and waits for response; we fire and forget.
-		go existing.WS.Close(websocket.StatusNormalClosure, "Replaced by new connection")
+		go func() { _ = existing.WS.Close(websocket.StatusNormalClosure, "Replaced by new connection") }()
 	}
 
 	return Registered
@@ -148,7 +148,7 @@ func (m *Manager) HandleClose(conn *Conn) bool {
 	}
 	m.mu.Unlock()
 
-	go other.WS.Close(websocket.StatusNormalClosure, "Peer disconnected")
+	go func() { _ = other.WS.Close(websocket.StatusNormalClosure, "Peer disconnected") }()
 	return true
 }
 
@@ -202,6 +202,6 @@ func (m *Manager) CloseAll(code websocket.StatusCode, reason string) {
 	m.mu.Unlock()
 
 	for _, c := range conns {
-		c.WS.Close(code, reason)
+		_ = c.WS.Close(code, reason)
 	}
 }

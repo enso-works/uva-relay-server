@@ -27,7 +27,7 @@ func startTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 
-	go srv.Start()
+	go func() { _ = srv.Start() }()
 	t.Cleanup(func() {
 		srv.Close()
 	})

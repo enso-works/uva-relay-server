@@ -27,7 +27,7 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 			pingStop()
 		}
 		mgr.HandleClose(conn)
-		ws.CloseNow()
+		_ = ws.CloseNow()
 	}()
 
 	for {
@@ -73,7 +73,7 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 			} else {
 				sendJSON(ctx, ws, protocol.NewServerRejected(string(result)))
 				logger.Info("server rejected", "username", m.Username, "reason", result)
-				ws.Close(websocket.StatusNormalClosure, "Registration rejected: "+string(result))
+				_ = ws.Close(websocket.StatusNormalClosure, "Registration rejected: "+string(result))
 				return
 			}
 
@@ -90,7 +90,7 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 			} else {
 				sendJSON(ctx, ws, protocol.NewClientError(connResult.Status))
 				logger.Info("client connection failed", "username", m.Username, "reason", connResult.Status)
-				ws.Close(websocket.StatusNormalClosure, "Connection failed: "+connResult.Status)
+				_ = ws.Close(websocket.StatusNormalClosure, "Connection failed: "+connResult.Status)
 				return
 			}
 		}
@@ -124,7 +124,7 @@ func pingLoop(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager,
 			cancel()
 			if err != nil {
 				logger.Debug("ping failed, closing connection", "username", conn.Username, "err", err)
-				ws.Close(websocket.StatusNormalClosure, "Pong timeout")
+				_ = ws.Close(websocket.StatusNormalClosure, "Pong timeout")
 				return
 			}
 		}

@@ -9,7 +9,7 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	// Clear env vars that might interfere
 	for _, key := range []string{"RELAY_PORT", "RELAY_DATA_DIR", "RELAY_PING_INTERVAL_MS", "RELAY_PONG_TIMEOUT_MS", "RELAY_RECLAIM_DAYS", "RELAY_LOG_LEVEL", "RELAY_PORT_FILE"} {
-		os.Unsetenv(key)
+		_ = os.Unsetenv(key)
 	}
 
 	cfg := Load()
@@ -35,18 +35,13 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadFromEnv(t *testing.T) {
-	os.Setenv("RELAY_PORT", "5555")
-	os.Setenv("RELAY_DATA_DIR", "/tmp/test-relay")
-	os.Setenv("RELAY_PING_INTERVAL_MS", "10000")
-	os.Setenv("RELAY_PONG_TIMEOUT_MS", "5000")
-	os.Setenv("RELAY_RECLAIM_DAYS", "30")
-	os.Setenv("RELAY_LOG_LEVEL", "debug")
-	os.Setenv("RELAY_PORT_FILE", "/tmp/port")
-	defer func() {
-		for _, key := range []string{"RELAY_PORT", "RELAY_DATA_DIR", "RELAY_PING_INTERVAL_MS", "RELAY_PONG_TIMEOUT_MS", "RELAY_RECLAIM_DAYS", "RELAY_LOG_LEVEL", "RELAY_PORT_FILE"} {
-			os.Unsetenv(key)
-		}
-	}()
+	t.Setenv("RELAY_PORT", "5555")
+	t.Setenv("RELAY_DATA_DIR", "/tmp/test-relay")
+	t.Setenv("RELAY_PING_INTERVAL_MS", "10000")
+	t.Setenv("RELAY_PONG_TIMEOUT_MS", "5000")
+	t.Setenv("RELAY_RECLAIM_DAYS", "30")
+	t.Setenv("RELAY_LOG_LEVEL", "debug")
+	t.Setenv("RELAY_PORT_FILE", "/tmp/port")
 
 	cfg := Load()
 
@@ -74,8 +69,7 @@ func TestLoadFromEnv(t *testing.T) {
 }
 
 func TestInvalidEnvInt(t *testing.T) {
-	os.Setenv("RELAY_PORT", "not-a-number")
-	defer os.Unsetenv("RELAY_PORT")
+	t.Setenv("RELAY_PORT", "not-a-number")
 
 	cfg := Load()
 	if cfg.Port != 4400 {

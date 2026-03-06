@@ -132,7 +132,7 @@ func TestReclaimInactive(t *testing.T) {
 	// Insert with old timestamp directly
 	r.Register("old-user", "install-1")
 	oldTime := time.Now().UTC().AddDate(0, 0, -100).Format(time.RFC3339Nano)
-	r.db.Exec("UPDATE usernames SET last_seen_at = ? WHERE username = ?", oldTime, "old-user")
+	_, _ = r.db.Exec("UPDATE usernames SET last_seen_at = ? WHERE username = ?", oldTime, "old-user")
 
 	r.Register("new-user", "install-2")
 

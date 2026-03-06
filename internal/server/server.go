@@ -140,7 +140,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) Close() error {
 	s.Manager.CloseAll(websocket.StatusGoingAway, "Server shutting down")
-	s.Registry.Close()
+	_ = s.Registry.Close()
 	return s.httpServer.Close()
 }
 
@@ -197,7 +197,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func parseLogLevel(s string) slog.Level {

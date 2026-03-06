@@ -37,12 +37,12 @@ func New(dataDir string) (*Registry, error) {
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
 
 	if err := initSchema(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
@@ -191,7 +191,7 @@ func (r *Registry) List() []UsernameRecord {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var records []UsernameRecord
 	for rows.Next() {
