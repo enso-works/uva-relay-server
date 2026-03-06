@@ -50,22 +50,34 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H 100.79.155.92 >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy to server
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          DOCKER_NETWORK: ${{ secrets.DOCKER_NETWORK }}
+          RELAY_ADMIN_TOKEN: ${{ secrets.RELAY_ADMIN_TOKEN }}
+          RELAY_SERVER_AUTH_TOKEN: ${{ secrets.RELAY_SERVER_AUTH_TOKEN }}
         run: |
-          ssh -o StrictHostKeyChecking=no deploy@100.79.155.92 << 'EOF'
-            sudo /usr/bin/docker pull ghcr.io/enso-works/uva-relay-server:latest
+          : "${VPS_HOST:?VPS_HOST is required}"
+          : "${DOCKER_NETWORK:?DOCKER_NETWORK is required}"
+          : "${RELAY_ADMIN_TOKEN:?RELAY_ADMIN_TOKEN is required}"
+          : "${RELAY_SERVER_AUTH_TOKEN:?RELAY_SERVER_AUTH_TOKEN is required}"
+          ssh deploy@${VPS_HOST} << EOF
+            sudo /usr/bin/docker pull ${IMAGE}
             sudo /usr/bin/docker stop uvame-relay || true
             sudo /usr/bin/docker rm uvame-relay || true
             sudo /usr/bin/docker run -d \
               --name uvame-relay \
               --restart unless-stopped \
-              --network bavrk_default \
+              --network ${DOCKER_NETWORK} \
               -e RELAY_PORT=4400 \
               -e RELAY_DATA_DIR=/data \
               -e RELAY_LOG_LEVEL=info \
+              -e RELAY_ADMIN_TOKEN=${RELAY_ADMIN_TOKEN} \
+              -e RELAY_SERVER_AUTH_TOKEN=${RELAY_SERVER_AUTH_TOKEN} \
               -v uvame_relay_data:/data \
-              ghcr.io/enso-works/uva-relay-server:latest
+              ${IMAGE}
             sudo /usr/bin/docker image prune -f
           EOF
