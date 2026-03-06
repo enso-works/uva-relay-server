@@ -17,6 +17,7 @@ type ServerRegister struct {
 	Type      string `json:"type"`
 	Username  string `json:"username"`
 	InstallID string `json:"installId"`
+	AuthToken string `json:"authToken,omitempty"`
 }
 
 type ServerRegistered struct {

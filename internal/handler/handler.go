@@ -12,13 +12,16 @@ import (
 )
 
 type Config struct {
-	PingInterval time.Duration
-	PongTimeout  time.Duration
+	PingInterval    time.Duration
+	PongTimeout     time.Duration
+	ServerAuthToken string
 }
+
+const writeTimeout = 10 * time.Second
 
 // ServeWS handles a single WebSocket connection's lifecycle.
 // Each connection gets its own goroutine running this function.
-func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, cfg Config, logger *slog.Logger) {
+func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, cfg Config, logger *slog.Logger, bearerToken string) {
 	conn := &connections.Conn{WS: ws}
 	var pingStop context.CancelFunc
 
@@ -59,6 +62,13 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 
 		switch m := msg.(type) {
 		case *protocol.ServerRegister:
+			if cfg.ServerAuthToken != "" && m.AuthToken != cfg.ServerAuthToken && bearerToken != cfg.ServerAuthToken {
+				sendJSON(ctx, ws, protocol.NewServerRejected("unauthorized"))
+				logger.Info("server rejected", "username", m.Username, "reason", "unauthorized")
+				_ = ws.Close(websocket.StatusPolicyViolation, "Registration rejected: unauthorized")
+				return
+			}
+
 			result := mgr.RegisterServer(conn, m.Username, m.InstallID)
 
 			if result == connections.Registered {
@@ -102,7 +112,9 @@ func sendJSON(ctx context.Context, ws *websocket.Conn, v any) {
 	if err != nil {
 		return
 	}
-	_ = ws.Write(ctx, websocket.MessageText, data)
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	_ = ws.Write(writeCtx, websocket.MessageText, data)
 }
 
 func pingLoop(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, conn *connections.Conn, cfg Config, logger *slog.Logger) {

@@ -226,3 +226,10 @@ func TestCount(t *testing.T) {
 		t.Errorf("expected 2, got %d", c)
 	}
 }
+
+func TestPing(t *testing.T) {
+	r := newTestRegistry()
+	if err := r.Ping(); err != nil {
+		t.Fatalf("expected ping to succeed, got %v", err)
+	}
+}

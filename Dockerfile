@@ -14,4 +14,5 @@ WORKDIR /data
 VOLUME ["/data"]
 EXPOSE 4400
 ENV RELAY_DATA_DIR=/data
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD wget -qO- http://127.0.0.1:4400/ready >/dev/null || exit 1
 ENTRYPOINT ["uvame-relay"]

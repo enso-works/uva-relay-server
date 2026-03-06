@@ -3,6 +3,7 @@ package connections
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/anthropics/uvame-relay/internal/protocol"
 	"github.com/anthropics/uvame-relay/internal/registry"
@@ -34,11 +35,13 @@ type ConnectionResult struct {
 }
 
 type Manager struct {
-	mu         sync.Mutex
-	waiting    map[string]*Conn            // username -> waiting server conn
-	pairs      map[*Conn]*pair             // conn -> pair (both server and client entries)
-	registry   *registry.Registry
+	mu       sync.Mutex
+	waiting  map[string]*Conn // username -> waiting server conn
+	pairs    map[*Conn]*pair  // conn -> pair (both server and client entries)
+	registry *registry.Registry
 }
+
+const relayWriteTimeout = 10 * time.Second
 
 func NewManager(reg *registry.Registry) *Manager {
 	return &Manager{
@@ -114,8 +117,10 @@ func (m *Manager) Forward(sender *Conn, msgType websocket.MessageType, data []by
 	}
 	m.mu.Unlock()
 
-	// Write outside the lock -- nhooyr.io/websocket handles concurrent writes safely
-	_ = target.WS.Write(context.Background(), msgType, data)
+	// Bound relay writes so a slow peer cannot stall a goroutine indefinitely.
+	writeCtx, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
+	defer cancel()
+	_ = target.WS.Write(writeCtx, msgType, data)
 }
 
 func (m *Manager) HandleClose(conn *Conn) bool {

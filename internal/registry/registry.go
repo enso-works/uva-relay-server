@@ -207,3 +207,7 @@ func (r *Registry) List() []UsernameRecord {
 func (r *Registry) Close() error {
 	return r.db.Close()
 }
+
+func (r *Registry) Ping() error {
+	return r.db.Ping()
+}

@@ -15,13 +15,30 @@ import (
 
 func startTestServer(t *testing.T) *Server {
 	t.Helper()
-	srv, err := New(Options{
+	return startTestServerWithOptions(t, Options{
 		Port:         0,
 		InMemoryDB:   true,
 		PingInterval: 5 * time.Second,
 		PongTimeout:  2 * time.Second,
 		ReclaimDays:  90,
 		LogLevel:     "warn",
+	})
+}
+
+func startTestServerWithOptions(t *testing.T, opts Options) *Server {
+	t.Helper()
+	srv, err := New(Options{
+		Port:             opts.Port,
+		InMemoryDB:       opts.InMemoryDB,
+		PingInterval:     opts.PingInterval,
+		PongTimeout:      opts.PongTimeout,
+		ReclaimDays:      opts.ReclaimDays,
+		LogLevel:         opts.LogLevel,
+		LogJSON:          opts.LogJSON,
+		AdminToken:       opts.AdminToken,
+		ServerAuthToken:  opts.ServerAuthToken,
+		AllowedOrigins:   opts.AllowedOrigins,
+		WSOriginPatterns: opts.WSOriginPatterns,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,11 +54,20 @@ func startTestServer(t *testing.T) *Server {
 
 func connectWS(t *testing.T, srv *Server) *websocket.Conn {
 	t.Helper()
+	return connectWSWithHeaders(t, srv, nil)
+}
+
+func connectWSWithHeaders(t *testing.T, srv *Server, headers http.Header) *websocket.Conn {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	url := fmt.Sprintf("ws://localhost:%d/ws", srv.Port())
-	ws, _, err := websocket.Dial(ctx, url, nil)
+	opts := &websocket.DialOptions{}
+	if headers != nil {
+		opts.HTTPHeader = headers
+	}
+	ws, _, err := websocket.Dial(ctx, url, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +116,20 @@ func readBytes(t *testing.T, ws *websocket.Conn) (websocket.MessageType, []byte)
 
 func registerServer(t *testing.T, ws *websocket.Conn, username, installID string) {
 	t.Helper()
-	sendMsg(t, ws, map[string]any{
+	registerServerWithAuthToken(t, ws, username, installID, "")
+}
+
+func registerServerWithAuthToken(t *testing.T, ws *websocket.Conn, username, installID, authToken string) {
+	t.Helper()
+	payload := map[string]any{
 		"type":      "server_register",
 		"username":  username,
 		"installId": installID,
-	})
+	}
+	if authToken != "" {
+		payload["authToken"] = authToken
+	}
+	sendMsg(t, ws, payload)
 	msg := readMsg(t, ws)
 	if msg["type"] != "server_registered" {
 		t.Fatalf("expected server_registered, got %v", msg)
@@ -115,7 +150,19 @@ func connectClient(t *testing.T, ws *websocket.Conn, username string) {
 
 func getJSON(t *testing.T, url string) map[string]any {
 	t.Helper()
-	resp, err := http.Get(url)
+	return getJSONWithHeaders(t, url, nil)
+}
+
+func getJSONWithHeaders(t *testing.T, url string, headers map[string]string) map[string]any {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +173,23 @@ func getJSON(t *testing.T, url string) map[string]any {
 		t.Fatal(err)
 	}
 	return result
+}
+
+func getStatusCode(t *testing.T, url string, headers map[string]string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }
 
 // --- Server Registration Flow ---
@@ -575,6 +639,15 @@ func TestHealthEndpoint(t *testing.T) {
 	})
 }
 
+func TestReadyEndpoint(t *testing.T) {
+	srv := startTestServer(t)
+	url := fmt.Sprintf("http://localhost:%d/ready", srv.Port())
+	result := getJSON(t, url)
+	if result["status"] != "ready" {
+		t.Fatalf("expected ready status, got %v", result["status"])
+	}
+}
+
 // --- Online Endpoint ---
 
 func TestOnlineEndpoint(t *testing.T) {
@@ -597,6 +670,83 @@ func TestOnlineEndpoint(t *testing.T) {
 		if result["online"] != true {
 			t.Error("expected online=true")
 		}
+	})
+}
+
+func TestAdminProtectedEndpoints(t *testing.T) {
+	srv := startTestServerWithOptions(t, Options{
+		Port:         0,
+		InMemoryDB:   true,
+		PingInterval: 5 * time.Second,
+		PongTimeout:  2 * time.Second,
+		ReclaimDays:  90,
+		LogLevel:     "warn",
+		AdminToken:   "secret-token",
+	})
+
+	t.Run("status requires admin token", func(t *testing.T) {
+		url := fmt.Sprintf("http://localhost:%d/status", srv.Port())
+		if code := getStatusCode(t, url, nil); code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 without token, got %d", code)
+		}
+		if code := getStatusCode(t, url, map[string]string{"Authorization": "Bearer secret-token"}); code != http.StatusOK {
+			t.Fatalf("expected 200 with bearer token, got %d", code)
+		}
+	})
+
+	t.Run("online requires admin token", func(t *testing.T) {
+		ws := connectWS(t, srv)
+		registerServer(t, ws, "admin-online", "install-1")
+
+		url := fmt.Sprintf("http://localhost:%d/online/admin-online", srv.Port())
+		if code := getStatusCode(t, url, nil); code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 without token, got %d", code)
+		}
+
+		result := getJSONWithHeaders(t, url, map[string]string{"X-Relay-Admin-Token": "secret-token"})
+		if result["online"] != true {
+			t.Fatal("expected online=true with valid admin token")
+		}
+	})
+}
+
+func TestServerRegistrationAuth(t *testing.T) {
+	srv := startTestServerWithOptions(t, Options{
+		Port:            0,
+		InMemoryDB:      true,
+		PingInterval:    5 * time.Second,
+		PongTimeout:     2 * time.Second,
+		ReclaimDays:     90,
+		LogLevel:        "warn",
+		ServerAuthToken: "server-secret",
+	})
+
+	t.Run("rejects server registration without auth token", func(t *testing.T) {
+		ws := connectWS(t, srv)
+		sendMsg(t, ws, map[string]any{
+			"type":      "server_register",
+			"username":  "authless",
+			"installId": "install-1",
+		})
+		msg := readMsg(t, ws)
+		if msg["type"] != "server_rejected" {
+			t.Fatalf("expected server_rejected, got %v", msg)
+		}
+		if msg["reason"] != "unauthorized" {
+			t.Fatalf("expected unauthorized, got %v", msg["reason"])
+		}
+	})
+
+	t.Run("allows server registration with websocket bearer token", func(t *testing.T) {
+		headers := http.Header{}
+		headers.Set("Authorization", "Bearer server-secret")
+		ws := connectWSWithHeaders(t, srv, headers)
+		registerServer(t, ws, "bearer-auth", "install-1")
+	})
+
+	t.Run("allows server registration with message auth token", func(t *testing.T) {
+		ws := connectWS(t, srv)
+		registerServerWithAuthToken(t, ws, "message-auth", "install-1", "server-secret")
 	})
 }
 

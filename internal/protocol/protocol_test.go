@@ -42,7 +42,7 @@ func TestIsValidUsername(t *testing.T) {
 }
 
 func TestParseServerRegister(t *testing.T) {
-	data := []byte(`{"type":"server_register","username":"alice","installId":"abc-123"}`)
+	data := []byte(`{"type":"server_register","username":"alice","installId":"abc-123","authToken":"server-secret"}`)
 	msg := ParseMessage(data)
 	sr, ok := msg.(*ServerRegister)
 	if !ok {
@@ -53,6 +53,9 @@ func TestParseServerRegister(t *testing.T) {
 	}
 	if sr.InstallID != "abc-123" {
 		t.Errorf("expected installId abc-123, got %s", sr.InstallID)
+	}
+	if sr.AuthToken != "server-secret" {
+		t.Errorf("expected authToken server-secret, got %s", sr.AuthToken)
 	}
 }
 

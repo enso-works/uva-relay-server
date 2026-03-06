@@ -41,6 +41,11 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("RELAY_PONG_TIMEOUT_MS", "5000")
 	t.Setenv("RELAY_RECLAIM_DAYS", "30")
 	t.Setenv("RELAY_LOG_LEVEL", "debug")
+	t.Setenv("RELAY_LOG_FORMAT", "json")
+	t.Setenv("RELAY_ADMIN_TOKEN", "secret-token")
+	t.Setenv("RELAY_SERVER_AUTH_TOKEN", "server-secret")
+	t.Setenv("RELAY_ALLOWED_ORIGINS", "https://uva.me, https://app.uva.me")
+	t.Setenv("RELAY_WS_ORIGIN_PATTERNS", "uva.me,*.uva.me")
 	t.Setenv("RELAY_PORT_FILE", "/tmp/port")
 
 	cfg := Load()
@@ -62,6 +67,21 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("expected log level debug, got %s", cfg.LogLevel)
+	}
+	if !cfg.LogJSON {
+		t.Error("expected JSON logging to be enabled")
+	}
+	if cfg.AdminToken != "secret-token" {
+		t.Errorf("expected admin token to be loaded, got %q", cfg.AdminToken)
+	}
+	if cfg.ServerAuthToken != "server-secret" {
+		t.Errorf("expected server auth token to be loaded, got %q", cfg.ServerAuthToken)
+	}
+	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "https://uva.me" || cfg.AllowedOrigins[1] != "https://app.uva.me" {
+		t.Errorf("unexpected allowed origins: %#v", cfg.AllowedOrigins)
+	}
+	if len(cfg.WSOriginPatterns) != 2 || cfg.WSOriginPatterns[0] != "uva.me" || cfg.WSOriginPatterns[1] != "*.uva.me" {
+		t.Errorf("unexpected websocket origin patterns: %#v", cfg.WSOriginPatterns)
 	}
 	if cfg.PortFile != "/tmp/port" {
 		t.Errorf("expected port file /tmp/port, got %s", cfg.PortFile)

@@ -20,12 +20,17 @@ func main() {
 	cfg := config.Load()
 
 	opts := server.Options{
-		Port:         cfg.Port,
-		DataDir:      cfg.DataDir,
-		PingInterval: cfg.PingInterval,
-		PongTimeout:  cfg.PongTimeout,
-		ReclaimDays:  cfg.ReclaimDays,
-		LogLevel:     cfg.LogLevel,
+		Port:             cfg.Port,
+		DataDir:          cfg.DataDir,
+		PingInterval:     cfg.PingInterval,
+		PongTimeout:      cfg.PongTimeout,
+		ReclaimDays:      cfg.ReclaimDays,
+		LogLevel:         cfg.LogLevel,
+		LogJSON:          cfg.LogJSON,
+		AdminToken:       cfg.AdminToken,
+		ServerAuthToken:  cfg.ServerAuthToken,
+		AllowedOrigins:   cfg.AllowedOrigins,
+		WSOriginPatterns: cfg.WSOriginPatterns,
 	}
 
 	srv, err := server.New(opts)
