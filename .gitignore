@@ -2,3 +2,5 @@ uvame-relay
 *.db
 *.log
 dist/
+.temp/
+temp/
