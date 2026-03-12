@@ -234,7 +234,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.Logger.Debug("websocket accept error", "err", err)
 		return
 	}
-	ws.SetReadLimit(1 << 20) // 1MB - relay-forwarded encrypted messages can be large
+	ws.SetReadLimit(16 << 20) // 16MB - relay-forwarded encrypted messages can be very large
 
 	handlerCfg := handler.Config{
 		PingInterval:    s.cfg.PingInterval,
