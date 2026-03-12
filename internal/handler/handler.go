@@ -36,7 +36,7 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 	for {
 		msgType, data, err := ws.Read(ctx)
 		if err != nil {
-			logger.Debug("connection read error", "username", conn.Username, "err", err)
+			logger.Info("connection read error", "username", conn.Username, "isServer", conn.IsServer, "err", err)
 			return
 		}
 

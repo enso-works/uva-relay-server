@@ -2,6 +2,7 @@ package connections
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -120,7 +121,15 @@ func (m *Manager) Forward(sender *Conn, msgType websocket.MessageType, data []by
 	// Bound relay writes so a slow peer cannot stall a goroutine indefinitely.
 	writeCtx, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
 	defer cancel()
-	_ = target.WS.Write(writeCtx, msgType, data)
+	if err := target.WS.Write(writeCtx, msgType, data); err != nil {
+		direction := "server→client"
+		if p.server == sender {
+			direction = "server→client"
+		} else {
+			direction = "client→server"
+		}
+		slog.Warn("relay forward write failed", "direction", direction, "username", sender.Username, "msgType", msgType, "len", len(data), "err", err)
+	}
 }
 
 func (m *Manager) HandleClose(conn *Conn) bool {
@@ -153,6 +162,11 @@ func (m *Manager) HandleClose(conn *Conn) bool {
 	}
 	m.mu.Unlock()
 
+	closingSide := "client"
+	if p.server == conn {
+		closingSide = "server"
+	}
+	slog.Info("pair broken", "closingSide", closingSide, "username", conn.Username)
 	go func() { _ = other.WS.Close(websocket.StatusNormalClosure, "Peer disconnected") }()
 	return true
 }
