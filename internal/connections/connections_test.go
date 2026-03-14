@@ -5,17 +5,19 @@ import (
 
 	"github.com/anthropics/uvame-relay/internal/registry"
 	"github.com/anthropics/uvame-relay/internal/testutil"
+	"github.com/google/uuid"
 )
 
 func newTestManager() (*Manager, *registry.Registry) {
 	reg := registry.NewFromDB(testutil.NewTestDB())
-	return NewManager(reg), reg
+	return NewManager(reg, NewMemStore()), reg
 }
 
 // mockConn creates a Conn with a nil WS (safe for map operations in tests,
 // but cannot actually send/receive messages).
 func mockConn(username string, isServer bool) *Conn {
 	return &Conn{
+		ID:       uuid.NewString(),
 		WS:       nil,
 		Username: username,
 		IsServer: isServer,
@@ -76,7 +78,7 @@ func TestConnectClient(t *testing.T) {
 		m.RegisterServer(server, "alice", "install-1")
 
 		client := mockConn("", false)
-		result := m.ConnectClient(client, "alice")
+		result := m.ConnectClient(client, "alice", "")
 		if result.Status != "connected" {
 			t.Errorf("expected connected, got %s", result.Status)
 		}
@@ -91,7 +93,7 @@ func TestConnectClient(t *testing.T) {
 		reg.Register("alice", "install-1")
 
 		client := mockConn("", false)
-		result := m.ConnectClient(client, "alice")
+		result := m.ConnectClient(client, "alice", "")
 		if result.Status != "server_offline" {
 			t.Errorf("expected server_offline, got %s", result.Status)
 		}
@@ -100,7 +102,7 @@ func TestConnectClient(t *testing.T) {
 	t.Run("returns unknown_username for unregistered username", func(t *testing.T) {
 		m, _ := newTestManager()
 		client := mockConn("", false)
-		result := m.ConnectClient(client, "nonexistent")
+		result := m.ConnectClient(client, "nonexistent", "")
 		if result.Status != "unknown_username" {
 			t.Errorf("expected unknown_username, got %s", result.Status)
 		}

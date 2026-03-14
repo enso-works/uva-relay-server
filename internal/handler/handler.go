@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/anthropics/uvame-relay/internal/auth"
 	"github.com/anthropics/uvame-relay/internal/connections"
 	"github.com/anthropics/uvame-relay/internal/protocol"
 	"github.com/coder/websocket"
@@ -15,6 +16,7 @@ type Config struct {
 	PingInterval    time.Duration
 	PongTimeout     time.Duration
 	ServerAuthToken string
+	JWTSecret       string
 }
 
 const writeTimeout = 10 * time.Second
@@ -22,7 +24,7 @@ const writeTimeout = 10 * time.Second
 // ServeWS handles a single WebSocket connection's lifecycle.
 // Each connection gets its own goroutine running this function.
 func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, cfg Config, logger *slog.Logger, bearerToken string) {
-	conn := &connections.Conn{WS: ws}
+	conn := connections.NewConn(ws)
 	var pingStop context.CancelFunc
 
 	defer func() {
@@ -62,20 +64,45 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 
 		switch m := msg.(type) {
 		case *protocol.ServerRegister:
-			if cfg.ServerAuthToken != "" && m.AuthToken != cfg.ServerAuthToken && bearerToken != cfg.ServerAuthToken {
+			username := m.Username
+			installID := m.InstallID
+			jwtAuthenticated := false
+
+			// Try JWT auth first
+			if cfg.JWTSecret != "" && m.JWT != "" {
+				claims, err := auth.ValidateToken(cfg.JWTSecret, m.JWT)
+				if err == nil {
+					username = claims.Username
+					installID = claims.InstallID
+					jwtAuthenticated = true
+				} else {
+					logger.Debug("jwt validation failed", "err", err)
+				}
+			}
+
+			// Fall back to authToken/bearerToken check
+			if !jwtAuthenticated && cfg.ServerAuthToken != "" && m.AuthToken != cfg.ServerAuthToken && bearerToken != cfg.ServerAuthToken {
 				sendJSON(ctx, ws, protocol.NewServerRejected("unauthorized"))
-				logger.Info("server rejected", "username", m.Username, "reason", "unauthorized")
+				logger.Info("server rejected", "username", username, "reason", "unauthorized")
 				_ = ws.Close(websocket.StatusPolicyViolation, "Registration rejected: unauthorized")
 				return
 			}
 
-			result := mgr.RegisterServer(conn, m.Username, m.InstallID)
+			result := mgr.RegisterServer(conn, username, installID)
 
 			if result == connections.Registered {
-				conn.Username = m.Username
+				conn.Username = username
 				conn.IsServer = true
-				sendJSON(ctx, ws, protocol.NewServerRegistered())
-				logger.Info("server registered", "username", m.Username)
+				conn.MultiClient = m.MultiClient
+
+				// Issue a fresh JWT if secret is configured
+				var jwtToken string
+				if cfg.JWTSecret != "" {
+					jwtToken, _ = auth.IssueToken(cfg.JWTSecret, username, installID)
+				}
+
+				sendJSON(ctx, ws, protocol.NewServerRegistered(jwtToken, m.MultiClient))
+				logger.Info("server registered", "username", username, "multiClient", m.MultiClient)
 
 				var pingCtx context.Context
 				pingCtx, pingStop = context.WithCancel(ctx)
@@ -88,13 +115,22 @@ func ServeWS(ctx context.Context, ws *websocket.Conn, mgr *connections.Manager, 
 			}
 
 		case *protocol.ClientConnect:
-			connResult := mgr.ConnectClient(conn, m.Username)
+			connResult := mgr.ConnectClient(conn, m.Username, m.ClientID)
 
 			if connResult.Status == "connected" {
 				conn.Username = m.Username
 				conn.IsServer = false
-				sendJSON(ctx, ws, protocol.NewClientConnected())
-				logger.Info("pair connected", "username", m.Username)
+				conn.ClientID = connResult.ClientID
+				sendJSON(ctx, ws, protocol.NewClientConnected(connResult.ClientID))
+				logger.Info("pair connected", "username", m.Username, "clientID", connResult.ClientID)
+
+				// Send any buffered messages from a previous session
+				if frames := mgr.GetBufferedMessages(m.Username); len(frames) > 0 {
+					sendJSON(ctx, ws, protocol.NewBufferedMessages(frames))
+					mgr.ClearBuffer(m.Username)
+					logger.Info("sent buffered messages", "username", m.Username, "count", len(frames))
+				}
+
 				// Stop ping on server side (paired connections don't need keepalive from relay)
 				// The server side's ping goroutine will detect pairing and exit.
 			} else {

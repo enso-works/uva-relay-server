@@ -21,6 +21,21 @@ type Config struct {
 	ServerAuthToken  string
 	AllowedOrigins   []string
 	WSOriginPatterns []string
+
+	// Redis
+	RedisURL      string
+	RedisPassword string
+	RedisDB       int
+
+	// JWT
+	JWTSecret string
+
+	// Rate limiting
+	RateLimitConnectionsPerMin int
+	RateLimitMessagesPerSec    int
+
+	// Message buffer
+	BufferSize int
 }
 
 func Load() *Config {
@@ -40,6 +55,17 @@ func Load() *Config {
 		ServerAuthToken:  envString("RELAY_SERVER_AUTH_TOKEN", ""),
 		AllowedOrigins:   envCSV("RELAY_ALLOWED_ORIGINS", []string{"*"}),
 		WSOriginPatterns: envCSV("RELAY_WS_ORIGIN_PATTERNS", []string{"*"}),
+
+		RedisURL:      envString("RELAY_REDIS_URL", ""),
+		RedisPassword: envString("RELAY_REDIS_PASSWORD", ""),
+		RedisDB:       envInt("RELAY_REDIS_DB", 0),
+
+		JWTSecret: envString("RELAY_JWT_SECRET", ""),
+
+		RateLimitConnectionsPerMin: envInt("RELAY_RATE_LIMIT_CONNECTIONS_PER_MIN", 30),
+		RateLimitMessagesPerSec:    envInt("RELAY_RATE_LIMIT_MESSAGES_PER_SEC", 1000),
+
+		BufferSize: envInt("RELAY_BUFFER_SIZE", 100),
 	}
 }
 

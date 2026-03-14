@@ -12,9 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anthropics/uvame-relay/internal/auth"
 	"github.com/anthropics/uvame-relay/internal/config"
 	"github.com/anthropics/uvame-relay/internal/connections"
 	"github.com/anthropics/uvame-relay/internal/handler"
+	"github.com/anthropics/uvame-relay/internal/ratelimit"
+	redispkg "github.com/anthropics/uvame-relay/internal/redis"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/anthropics/uvame-relay/internal/registry"
 	"github.com/anthropics/uvame-relay/internal/testutil"
 	"github.com/coder/websocket"
@@ -25,9 +29,11 @@ type Server struct {
 	listener   net.Listener
 	Manager    *connections.Manager
 	Registry   *registry.Registry
+	Limiter    *ratelimit.Limiter
 	Logger     *slog.Logger
 	startTime  time.Time
 	cfg        *config.Config
+	redis      *redispkg.Client // nil if not using Redis
 }
 
 type Options struct {
@@ -43,6 +49,21 @@ type Options struct {
 	ServerAuthToken  string
 	AllowedOrigins   []string
 	WSOriginPatterns []string
+
+	// Redis
+	RedisURL      string
+	RedisPassword string
+	RedisDB       int
+
+	// JWT
+	JWTSecret string
+
+	// Rate limiting
+	RateLimitConnectionsPerMin int
+	RateLimitMessagesPerSec    int
+
+	// Message buffer
+	BufferSize int
 }
 
 func New(opts Options) (*Server, error) {
@@ -93,7 +114,43 @@ func New(opts Options) (*Server, error) {
 		logger.Info("reclaimed inactive usernames", "count", reclaimed)
 	}
 
-	mgr := connections.NewManager(reg)
+	// Initialize store: Redis if configured, otherwise in-memory
+	var store connections.Store
+	var redisClient *redispkg.Client
+
+	if opts.RedisURL != "" {
+		rc, err := redispkg.New(opts.RedisURL, opts.RedisPassword, opts.RedisDB)
+		if err != nil {
+			logger.Warn("redis unavailable, falling back to in-memory store", "err", err)
+			store = connections.NewMemStore()
+		} else {
+			redisClient = rc
+			store = connections.NewRedisStore(rc.RDB())
+			logger.Info("using redis store", "url", opts.RedisURL)
+		}
+	} else {
+		store = connections.NewMemStore()
+	}
+
+	// Initialize rate limiter
+	var rdb *goredis.Client
+	if redisClient != nil {
+		rdb = redisClient.RDB()
+	}
+	limiter := ratelimit.NewLimiter(rdb, opts.RateLimitConnectionsPerMin, opts.RateLimitMessagesPerSec)
+
+	// Initialize message buffer (requires Redis)
+	var buffer *connections.Buffer
+	if redisClient != nil && opts.BufferSize > 0 {
+		buffer = connections.NewBuffer(redisClient.RDB(), opts.BufferSize)
+		logger.Info("message buffer enabled", "size", opts.BufferSize)
+	}
+
+	managerOpts := []connections.ManagerOption{connections.WithLimiter(limiter)}
+	if buffer != nil {
+		managerOpts = append(managerOpts, connections.WithBuffer(buffer))
+	}
+	mgr := connections.NewManager(reg, store, managerOpts...)
 
 	cfg := &config.Config{
 		PingInterval:     opts.PingInterval,
@@ -101,6 +158,10 @@ func New(opts Options) (*Server, error) {
 		AdminToken:       opts.AdminToken,
 		ServerAuthToken:  opts.ServerAuthToken,
 		WSOriginPatterns: append([]string(nil), opts.WSOriginPatterns...),
+		JWTSecret:        opts.JWTSecret,
+		BufferSize:       opts.BufferSize,
+		RateLimitConnectionsPerMin: opts.RateLimitConnectionsPerMin,
+		RateLimitMessagesPerSec:    opts.RateLimitMessagesPerSec,
 	}
 	if cfg.PingInterval == 0 {
 		cfg.PingInterval = 60 * time.Second
@@ -117,9 +178,11 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		Manager:   mgr,
 		Registry:  reg,
+		Limiter:   limiter,
 		Logger:    logger,
 		startTime: time.Now(),
 		cfg:       cfg,
+		redis:     redisClient,
 	}
 
 	corsHandler := func(next http.Handler) http.Handler {
@@ -139,6 +202,7 @@ func New(opts Options) (*Server, error) {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("GET /status", s.withAdminAuth(s.handleStatus))
 	mux.HandleFunc("GET /online/{username}", s.withAdminAuth(s.handleOnline))
+	mux.HandleFunc("POST /auth/refresh", s.handleAuthRefresh)
 	mux.HandleFunc("/ws", s.handleWS)
 
 	port := opts.Port
@@ -172,12 +236,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return err
 	}
+	if s.redis != nil {
+		_ = s.redis.Close()
+	}
 	return s.Registry.Close()
 }
 
 func (s *Server) Close() error {
 	s.Manager.CloseAll(websocket.StatusGoingAway, "Server shutting down")
 	_ = s.Registry.Close()
+	if s.redis != nil {
+		_ = s.redis.Close()
+	}
 	return s.httpServer.Close()
 }
 
@@ -196,6 +266,13 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.redis != nil {
+		if err := s.redis.Ping(r.Context()); err != nil {
+			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	writeJSON(w, map[string]any{
 		"status": "ready",
 	})
@@ -205,7 +282,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 
-	writeJSON(w, map[string]any{
+	status := map[string]any{
 		"status":     "ok",
 		"uptime":     time.Since(s.startTime).Seconds(),
 		"waiting":    s.Manager.GetWaitingCount(),
@@ -217,7 +294,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"sys":        mem.Sys,
 			"numGC":      mem.NumGC,
 		},
-	})
+	}
+	if s.redis != nil {
+		status["redis"] = "connected"
+	}
+
+	writeJSON(w, status)
 }
 
 func (s *Server) handleOnline(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +308,37 @@ func (s *Server) handleOnline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"online": online})
 }
 
+func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.JWTSecret == "" {
+		http.Error(w, "jwt not configured", http.StatusNotImplemented)
+		return
+	}
+
+	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		http.Error(w, "missing authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	refreshed, err := auth.RefreshToken(s.cfg.JWTSecret, token)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	writeJSON(w, map[string]string{"jwt": refreshed})
+}
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if ip == "" {
+		ip = r.RemoteAddr
+	}
+	if s.Limiter != nil && !s.Limiter.AllowConnection(r.Context(), ip) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: s.cfg.WSOriginPatterns,
 	})
@@ -240,6 +352,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		PingInterval:    s.cfg.PingInterval,
 		PongTimeout:     s.cfg.PongTimeout,
 		ServerAuthToken: s.cfg.ServerAuthToken,
+		JWTSecret:       s.cfg.JWTSecret,
 	}
 
 	handler.ServeWS(r.Context(), ws, s.Manager, handlerCfg, s.Logger, bearerToken(r.Header.Get("Authorization")))
