@@ -88,12 +88,24 @@ func TestParseInvalidJSON(t *testing.T) {
 }
 
 func TestNewServerRegisteredJSON(t *testing.T) {
-	msg := NewServerRegistered()
+	msg := NewServerRegistered("", false)
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	expected := `{"type":"server_registered"}`
+	if string(data) != expected {
+		t.Errorf("expected %s, got %s", expected, string(data))
+	}
+}
+
+func TestNewServerRegisteredWithJWT(t *testing.T) {
+	msg := NewServerRegistered("some-jwt-token", false)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := `{"type":"server_registered","jwt":"some-jwt-token"}`
 	if string(data) != expected {
 		t.Errorf("expected %s, got %s", expected, string(data))
 	}
@@ -112,7 +124,7 @@ func TestNewServerRejectedJSON(t *testing.T) {
 }
 
 func TestNewClientConnectedJSON(t *testing.T) {
-	msg := NewClientConnected()
+	msg := NewClientConnected("")
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatal(err)

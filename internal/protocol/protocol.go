@@ -14,14 +14,18 @@ func IsValidUsername(username string) bool {
 // Message types
 
 type ServerRegister struct {
-	Type      string `json:"type"`
-	Username  string `json:"username"`
-	InstallID string `json:"installId"`
-	AuthToken string `json:"authToken,omitempty"`
+	Type        string `json:"type"`
+	Username    string `json:"username"`
+	InstallID   string `json:"installId"`
+	AuthToken   string `json:"authToken,omitempty"`
+	JWT         string `json:"jwt,omitempty"`
+	MultiClient bool   `json:"multiClient,omitempty"`
 }
 
 type ServerRegistered struct {
-	Type string `json:"type"`
+	Type        string `json:"type"`
+	JWT         string `json:"jwt,omitempty"`
+	MultiClient bool   `json:"multiClient,omitempty"`
 }
 
 type ServerRejected struct {
@@ -32,10 +36,12 @@ type ServerRejected struct {
 type ClientConnect struct {
 	Type     string `json:"type"`
 	Username string `json:"username"`
+	ClientID string `json:"clientId,omitempty"`
 }
 
 type ClientConnected struct {
-	Type string `json:"type"`
+	Type     string `json:"type"`
+	ClientID string `json:"clientId,omitempty"`
 }
 
 type ClientError struct {
@@ -43,18 +49,67 @@ type ClientError struct {
 	Reason string `json:"reason"`
 }
 
+// Multi-client control messages (relay -> server)
+
+type RelayClientJoined struct {
+	Type     string `json:"type"`
+	ClientID string `json:"clientId"`
+}
+
+type RelayClientLeft struct {
+	Type     string `json:"type"`
+	ClientID string `json:"clientId"`
+}
+
+func NewRelayClientJoined(clientID string) RelayClientJoined {
+	return RelayClientJoined{Type: "relay_client_joined", ClientID: clientID}
+}
+
+func NewRelayClientLeft(clientID string) RelayClientLeft {
+	return RelayClientLeft{Type: "relay_client_left", ClientID: clientID}
+}
+
+// Backpressure notification (relay -> sender)
+
+type RelayBackpressure struct {
+	Type   string `json:"type"`
+	Action string `json:"action"`
+}
+
+func NewRelayBackpressure(action string) RelayBackpressure {
+	return RelayBackpressure{Type: "relay_backpressure", Action: action}
+}
+
+// BufferedFrame represents a single buffered WebSocket frame.
+type BufferedFrame struct {
+	Timestamp int64  `json:"ts"`
+	Direction string `json:"dir"`     // "s2c" or "c2s"
+	MsgType   int    `json:"msgType"` // websocket.MessageText=1, Binary=2
+	Data      string `json:"data"`    // base64 encoded
+}
+
+// BufferedMessages is sent to a reconnecting client with missed messages.
+type BufferedMessages struct {
+	Type     string          `json:"type"`
+	Messages []BufferedFrame `json:"messages"`
+}
+
+func NewBufferedMessages(messages []BufferedFrame) BufferedMessages {
+	return BufferedMessages{Type: "buffered_messages", Messages: messages}
+}
+
 // Constructors
 
-func NewServerRegistered() ServerRegistered {
-	return ServerRegistered{Type: "server_registered"}
+func NewServerRegistered(jwt string, multiClient bool) ServerRegistered {
+	return ServerRegistered{Type: "server_registered", JWT: jwt, MultiClient: multiClient}
 }
 
 func NewServerRejected(reason string) ServerRejected {
 	return ServerRejected{Type: "server_rejected", Reason: reason}
 }
 
-func NewClientConnected() ClientConnected {
-	return ClientConnected{Type: "client_connected"}
+func NewClientConnected(clientID string) ClientConnected {
+	return ClientConnected{Type: "client_connected", ClientID: clientID}
 }
 
 func NewClientError(reason string) ClientError {
