@@ -161,9 +161,8 @@ func (m *Manager) ConnectClient(conn *Conn, username, clientID string) Connectio
 
 	if serverConn.MultiClient {
 		// Multi-client mode: server stays in waiting
-		if clientID == "" {
-			clientID = uuid.NewString()
-		}
+		// Always assign a server-generated UUID for binary header compatibility
+		clientID = uuid.NewString()
 		conn.ClientID = clientID
 		conn.Username = username
 
