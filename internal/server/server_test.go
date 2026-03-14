@@ -27,19 +27,10 @@ func startTestServer(t *testing.T) *Server {
 
 func startTestServerWithOptions(t *testing.T, opts Options) *Server {
 	t.Helper()
-	srv, err := New(Options{
-		Port:             opts.Port,
-		InMemoryDB:       opts.InMemoryDB,
-		PingInterval:     opts.PingInterval,
-		PongTimeout:      opts.PongTimeout,
-		ReclaimDays:      opts.ReclaimDays,
-		LogLevel:         opts.LogLevel,
-		LogJSON:          opts.LogJSON,
-		AdminToken:       opts.AdminToken,
-		ServerAuthToken:  opts.ServerAuthToken,
-		AllowedOrigins:   opts.AllowedOrigins,
-		WSOriginPatterns: opts.WSOriginPatterns,
-	})
+	if !opts.InMemoryDB {
+		opts.InMemoryDB = true
+	}
+	srv, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -788,4 +779,367 @@ func TestConcurrentForwarding(t *testing.T) {
 	if received != msgCount {
 		t.Errorf("expected %d messages, got %d", msgCount, received)
 	}
+}
+
+// --- Multi-Client Support ---
+
+func registerMultiClientServer(t *testing.T, ws *websocket.Conn, username, installID string) {
+	t.Helper()
+	sendMsg(t, ws, map[string]any{
+		"type":        "server_register",
+		"username":    username,
+		"installId":   installID,
+		"multiClient": true,
+	})
+	msg := readMsg(t, ws)
+	if msg["type"] != "server_registered" {
+		t.Fatalf("expected server_registered, got %v", msg)
+	}
+	if msg["multiClient"] != true {
+		t.Fatalf("expected multiClient=true in response, got %v", msg["multiClient"])
+	}
+}
+
+func TestMultiClientRegistration(t *testing.T) {
+	srv := startTestServer(t)
+
+	t.Run("registers server with multiClient capability", func(t *testing.T) {
+		ws := connectWS(t, srv)
+		registerMultiClientServer(t, ws, "multi-reg", "install-1")
+		if !srv.Manager.IsWaiting("multi-reg") {
+			t.Error("expected multi-reg to be waiting")
+		}
+	})
+}
+
+func TestMultiClientPairing(t *testing.T) {
+	srv := startTestServer(t)
+
+	t.Run("multiple clients connect to same server", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "multi-pair", "install-1")
+
+		// Connect first client
+		client1 := connectWS(t, srv)
+		connectClient(t, client1, "multi-pair")
+
+		// Server should still be waiting (multi-client keeps it available)
+		if !srv.Manager.IsWaiting("multi-pair") {
+			t.Error("expected server to still be waiting after first client")
+		}
+
+		// Connect second client
+		client2 := connectWS(t, srv)
+		connectClient(t, client2, "multi-pair")
+
+		// Connect third client
+		client3 := connectWS(t, srv)
+		connectClient(t, client3, "multi-pair")
+
+		// All three should be paired
+		if srv.Manager.GetPairCount() != 3 {
+			t.Errorf("expected 3 pairs, got %d", srv.Manager.GetPairCount())
+		}
+	})
+
+	t.Run("server receives relay_client_joined for each client", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "multi-join", "install-1")
+
+		client1 := connectWS(t, srv)
+		connectClient(t, client1, "multi-join")
+
+		// Server should receive relay_client_joined
+		joinMsg := readMsg(t, serverWS)
+		if joinMsg["type"] != "relay_client_joined" {
+			t.Fatalf("expected relay_client_joined, got %v", joinMsg)
+		}
+		if joinMsg["clientId"] == nil || joinMsg["clientId"] == "" {
+			t.Error("expected non-empty clientId")
+		}
+	})
+
+	t.Run("server receives relay_client_left on client disconnect", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "multi-leave", "install-1")
+
+		client1 := connectWS(t, srv)
+		connectClient(t, client1, "multi-leave")
+
+		// Read the join message
+		joinMsg := readMsg(t, serverWS)
+		clientID := joinMsg["clientId"].(string)
+
+		// Disconnect client
+		client1.Close(websocket.StatusNormalClosure, "bye")
+		time.Sleep(100 * time.Millisecond)
+
+		// Server should receive relay_client_left
+		leftMsg := readMsg(t, serverWS)
+		if leftMsg["type"] != "relay_client_left" {
+			t.Fatalf("expected relay_client_left, got %v", leftMsg)
+		}
+		if leftMsg["clientId"] != clientID {
+			t.Errorf("expected clientId=%s, got %v", clientID, leftMsg["clientId"])
+		}
+	})
+
+	t.Run("other clients unaffected when one disconnects", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "multi-survive", "install-1")
+
+		client1 := connectWS(t, srv)
+		client2 := connectWS(t, srv)
+		connectClient(t, client1, "multi-survive")
+		readMsg(t, serverWS) // join 1
+		connectClient(t, client2, "multi-survive")
+		readMsg(t, serverWS) // join 2
+
+		// Disconnect client1
+		client1.Close(websocket.StatusNormalClosure, "bye")
+		time.Sleep(100 * time.Millisecond)
+		readMsg(t, serverWS) // left 1
+
+		// client2 should still work - send a message
+		ctx := context.Background()
+		client2.Write(ctx, websocket.MessageText, []byte(`{"test":"still alive"}`))
+
+		// Server should receive it (wrapped with multi-client header)
+		msgType, data := readBytes(t, serverWS)
+		if msgType != websocket.MessageBinary {
+			t.Errorf("expected binary (wrapped), got %v", msgType)
+		}
+		// Verify it contains the original message after the 17-byte header
+		if len(data) < 17 {
+			t.Fatal("wrapped message too short")
+		}
+		payload := string(data[17:])
+		if payload != `{"test":"still alive"}` {
+			t.Errorf("expected original payload, got %s", payload)
+		}
+	})
+}
+
+func TestMultiClientForwarding(t *testing.T) {
+	srv := startTestServer(t)
+
+	t.Run("client to server messages are wrapped with header", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "mc-fwd-c2s", "install-1")
+
+		clientWS := connectWS(t, srv)
+		connectClient(t, clientWS, "mc-fwd-c2s")
+		joinMsg := readMsg(t, serverWS)
+		_ = joinMsg["clientId"].(string)
+
+		// Client sends text message
+		ctx := context.Background()
+		clientWS.Write(ctx, websocket.MessageText, []byte("hello server"))
+
+		// Server receives binary (wrapped)
+		msgType, data := readBytes(t, serverWS)
+		if msgType != websocket.MessageBinary {
+			t.Errorf("expected binary, got %v", msgType)
+		}
+		// First byte should be 0x01 (text marker)
+		if data[0] != 0x01 {
+			t.Errorf("expected text marker 0x01, got 0x%02x", data[0])
+		}
+		// Payload after 17-byte header
+		if string(data[17:]) != "hello server" {
+			t.Errorf("unexpected payload: %s", string(data[17:]))
+		}
+	})
+
+	t.Run("server broadcast reaches all clients", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "mc-broadcast", "install-1")
+
+		client1 := connectWS(t, srv)
+		client2 := connectWS(t, srv)
+		connectClient(t, client1, "mc-broadcast")
+		readMsg(t, serverWS) // join 1
+		connectClient(t, client2, "mc-broadcast")
+		readMsg(t, serverWS) // join 2
+
+		// Server sends a text message without header (broadcast)
+		ctx := context.Background()
+		serverWS.Write(ctx, websocket.MessageText, []byte("broadcast msg"))
+
+		// Both clients should receive it
+		_, data1 := readBytes(t, client1)
+		_, data2 := readBytes(t, client2)
+		if string(data1) != "broadcast msg" {
+			t.Errorf("client1: expected 'broadcast msg', got %s", string(data1))
+		}
+		if string(data2) != "broadcast msg" {
+			t.Errorf("client2: expected 'broadcast msg', got %s", string(data2))
+		}
+	})
+}
+
+func TestMultiClientServerDisconnect(t *testing.T) {
+	srv := startTestServer(t)
+
+	t.Run("server disconnect closes all clients", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		registerMultiClientServer(t, serverWS, "mc-srv-disc", "install-1")
+
+		client1 := connectWS(t, srv)
+		client2 := connectWS(t, srv)
+		connectClient(t, client1, "mc-srv-disc")
+		connectClient(t, client2, "mc-srv-disc")
+
+		serverWS.Close(websocket.StatusNormalClosure, "bye")
+		time.Sleep(200 * time.Millisecond)
+
+		// Both clients should be closed
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		_, _, err := client1.Read(ctx)
+		if err == nil {
+			t.Error("expected client1 to be closed")
+		}
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel2()
+		_, _, err = client2.Read(ctx2)
+		if err == nil {
+			t.Error("expected client2 to be closed")
+		}
+	})
+}
+
+// --- Backpressure ---
+
+func TestBackpressureLegacy(t *testing.T) {
+	srv := startTestServer(t)
+
+	t.Run("messages forwarded normally under threshold", func(t *testing.T) {
+		serverWS := connectWS(t, srv)
+		clientWS := connectWS(t, srv)
+		registerServer(t, serverWS, "bp-normal", "install-1")
+		connectClient(t, clientWS, "bp-normal")
+
+		ctx := context.Background()
+		clientWS.Write(ctx, websocket.MessageText, []byte("test"))
+		_, data := readBytes(t, serverWS)
+		if string(data) != "test" {
+			t.Errorf("expected 'test', got %s", string(data))
+		}
+	})
+}
+
+// --- JWT Auth Flow ---
+
+func TestJWTAuthFlow(t *testing.T) {
+	srv := startTestServerWithOptions(t, Options{
+		Port:            0,
+		InMemoryDB:      true,
+		PingInterval:    5 * time.Second,
+		PongTimeout:     2 * time.Second,
+		ReclaimDays:     90,
+		LogLevel:        "warn",
+		ServerAuthToken: "server-secret",
+		JWTSecret:       "jwt-secret-key",
+	})
+
+	t.Run("jwt issued on registration and accepted on reconnect", func(t *testing.T) {
+		// First registration with authToken
+		ws1 := connectWS(t, srv)
+		sendMsg(t, ws1, map[string]any{
+			"type":      "server_register",
+			"username":  "jwt-test",
+			"installId": "install-1",
+			"authToken": "server-secret",
+		})
+		msg := readMsg(t, ws1)
+		if msg["type"] != "server_registered" {
+			t.Fatalf("expected server_registered, got %v", msg)
+		}
+		jwt := msg["jwt"]
+		if jwt == nil || jwt == "" {
+			t.Fatal("expected jwt in response")
+		}
+
+		// Disconnect
+		ws1.Close(websocket.StatusNormalClosure, "done")
+		time.Sleep(100 * time.Millisecond)
+
+		// Reconnect with JWT (no authToken needed)
+		ws2 := connectWS(t, srv)
+		sendMsg(t, ws2, map[string]any{
+			"type":      "server_register",
+			"username":  "jwt-test",
+			"installId": "install-1",
+			"jwt":       jwt,
+		})
+		msg2 := readMsg(t, ws2)
+		if msg2["type"] != "server_registered" {
+			t.Fatalf("expected server_registered, got %v", msg2)
+		}
+	})
+
+	t.Run("refresh endpoint returns new jwt", func(t *testing.T) {
+		// Register to get a JWT
+		ws := connectWS(t, srv)
+		sendMsg(t, ws, map[string]any{
+			"type":      "server_register",
+			"username":  "jwt-refresh",
+			"installId": "install-2",
+			"authToken": "server-secret",
+		})
+		msg := readMsg(t, ws)
+		jwt := msg["jwt"].(string)
+
+		// Call refresh endpoint
+		url := fmt.Sprintf("http://localhost:%d/auth/refresh", srv.Port())
+		req, _ := http.NewRequest("POST", url, nil)
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var body map[string]string
+		json.NewDecoder(resp.Body).Decode(&body)
+		if body["jwt"] == "" {
+			t.Fatal("expected new jwt in response")
+		}
+	})
+}
+
+// --- Rate Limiting ---
+
+func TestRateLimitConnection(t *testing.T) {
+	srv := startTestServerWithOptions(t, Options{
+		Port:                       0,
+		InMemoryDB:                 true,
+		PingInterval:               5 * time.Second,
+		PongTimeout:                2 * time.Second,
+		ReclaimDays:                90,
+		LogLevel:                   "warn",
+		RateLimitConnectionsPerMin: 3,
+		RateLimitMessagesPerSec:    1000,
+	})
+
+	t.Run("rejects connections over rate limit", func(t *testing.T) {
+		// Make 3 connections (at limit)
+		for i := 0; i < 3; i++ {
+			connectWS(t, srv)
+		}
+
+		// 4th should be rejected with 429
+		url := fmt.Sprintf("http://localhost:%d/ws", srv.Port())
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("expected 429, got %d", resp.StatusCode)
+		}
+	})
 }

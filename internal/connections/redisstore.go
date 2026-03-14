@@ -43,12 +43,14 @@ var (
 
 	// removePairScript atomically gets the peer, deletes both peer entries,
 	// and removes both from the paired set.
+	// KEYS[1] = peer:{connID}, KEYS[2] = paired set
+	// ARGV[1] = connID, ARGV[2] = peer key prefix
 	removePairScript = redis.NewScript(`
 		local peer = redis.call("GET", KEYS[1])
 		if peer == false then return "" end
 		redis.call("DEL", KEYS[1])
-		redis.call("DEL", KEYS[2]..peer)
-		redis.call("SREM", KEYS[3], ARGV[1], peer)
+		redis.call("DEL", ARGV[2]..peer)
+		redis.call("SREM", KEYS[2], ARGV[1], peer)
 		return peer
 	`)
 )
@@ -124,8 +126,8 @@ func (s *redisStore) GetPeer(ctx context.Context, connID string) (string, bool) 
 
 func (s *redisStore) RemovePair(ctx context.Context, connID string) (string, bool) {
 	result, err := removePairScript.Run(ctx, s.rdb,
-		[]string{peerPrefix + connID, peerPrefix, pairedSetKey},
-		connID,
+		[]string{peerPrefix + connID, pairedSetKey},
+		connID, peerPrefix,
 	).Text()
 	if err != nil || result == "" {
 		return "", false
